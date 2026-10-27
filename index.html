@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Icon 3D 路线舞台</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+} }
+</script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4f4f8; color: #1d1d28; font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: #555; font-size: 12px; }
+  .inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+  .inputs label { display: block; font-weight: 600; margin-bottom: 4px; }
+  textarea { width: 100%; height: 150px; padding: 6px; border: 1px solid #c9cad6; border-radius: 4px; background: #fff; color: #1d1d28; font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace; resize: vertical; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+  button { font: inherit; padding: 6px 16px; border: 1px solid #3b3b5c; background: #3b3b5c; color: #fff; border-radius: 4px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: #555; }
+  #sheet { padding: 8px 0 24px; }
+  #grid { display: grid; grid-template-columns: repeat(3, 300px); gap: 16px; justify-content: start; }
+  .cell { margin: 0; text-align: center; }
+  .cell img { display: block; width: 256px; height: 256px; margin: 0 auto; }
+  .cell figcaption { margin-top: 4px; font-size: 12px; line-height: 1.4; word-break: break-all; }
+  .cell.err .errbox { width: 256px; height: 256px; margin: 0 auto; padding: 10px; border: 2px solid #c62828; border-radius: 6px; background: #fff; color: #c62828; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; word-break: break-word; overflow: auto; }
+  .cell.err figcaption { color: #c62828; font-weight: 600; }
+  .stripLabel { margin: 14px 0 4px; font-size: 12px; color: #555; }
+  .strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 44px; padding: 8px; border-radius: 4px; }
+  .strip img { display: block; width: 28px; height: 28px; }
+  .strip.white { background: #fff; }
+  .strip.dark { background: #1b1b24; }
+  .total { margin-top: 14px; font-weight: 600; }
+  .warn { margin: 6px 0 0; padding-left: 18px; color: #c62828; }
+  .warn li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Icon 3D 路线舞台（three 0.185.1）</h1>
+  <div class="sub">舞台与 harness 一致：NeutralToneMapping · 曝光 1.0 · RoomEnvironment 0.55 · 相机 28° / 仰角 16° / 距离 4.6。成本循环在 160 px 上测 120 次，去掉前 10 次。</div>
+
+  <div class="inputs">
+    <div><label for="b-hero">主图 hero</label><textarea id="b-hero" data-name="hero" spellcheck="false"></textarea></div>
+    <div><label for="b-home">概览 home</label><textarea id="b-home" data-name="home" spellcheck="false"></textarea></div>
+    <div><label for="b-local">本机 local</label><textarea id="b-local" data-name="local" spellcheck="false"></textarea></div>
+    <div><label for="b-cloud">云端 cloud</label><textarea id="b-cloud" data-name="cloud" spellcheck="false"></textarea></div>
+    <div><label for="b-backup">备份 backup</label><textarea id="b-backup" data-name="backup" spellcheck="false"></textarea></div>
+    <div><label for="b-settings">设置 settings</label><textarea id="b-settings" data-name="settings" spellcheck="false"></textarea></div>
+  </div>
+
+  <div class="bar">
+    <input type="file" id="files" multiple accept=".js">
+    <button id="run" type="button">渲染全部</button>
+    <span id="status">空框会被跳过。文件名需为 hero.js / home.js / local.js / cloud.js / backup.js / settings.js。</span>
+  </div>
+
+  <section id="sheet">
+    <div id="grid"></div>
+    <div class="stripLabel">白底 #fff · 56 px 原图按 28×28 显示</div>
+    <div class="strip white" id="strip-white"></div>
+    <div class="stripLabel">深底 #1b1b24 · 56 px 原图按 28×28 显示</div>
+    <div class="strip dark" id="strip-dark"></div>
+    <div class="total" id="total"></div>
+    <ul class="warn" id="warnings"></ul>
+    <div class="sub" id="budget-ok"></div>
+  </section>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+
+const NAMES = ['hero', 'home', 'local', 'cloud', 'backup', 'settings'];
+const BUDGET = { triangles: 6000, materials: 6, meshes: 40, costMedianMs: 1 };
+const STILL_LARGE = 512, STILL_SMALL = 56, COST_SIZE = 160, COST_RUNS = 120, COST_DROP = 10;
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (t) => { $('status').textContent = t; };
+const tick = () => new Promise((r) => setTimeout(r, 16));
+const round3 = (x) => Math.round(x * 1000) / 1000;
+
+// One renderer, one scene, reused for every icon. The canvas is detached: it is only read via toDataURL.
+const canvas = document.createElement('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setClearColor(0x000000, 0);
+
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.55;
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd9dcf2, 0.7));
+const key = new THREE.DirectionalLight(0xfff4e8, 2.4);
+key.position.set(-3, 4, 3);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xdfe6ff, 1.2);
+rim.position.set(3, 1.5, -3);
+scene.add(rim);
+
+// Soft contact shadow: a radial gradient card, not a shadow map (cheap at icon size).
+const shadowTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'); const grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grd.addColorStop(0, 'rgba(30,26,60,0.34)'); grd.addColorStop(1, 'rgba(30,26,60,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+})();
+const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 1.9),
+  new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, toneMapped: false }));
+shadow.rotation.x = -Math.PI / 2;
+shadow.position.y = -1.02;
+scene.add(shadow);
+
+const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 50);
+const elev = THREE.MathUtils.degToRad(16), dist = 4.6;
+camera.position.set(0, Math.sin(elev) * dist, Math.cos(elev) * dist);
+camera.lookAt(0, -0.05, 0);
+
+const kit = {
+  RoundedBoxGeometry,
+  // Tolerant merge: mixed indexed/non-indexed parts (Extrude vs Box) and extra attributes are normalised first.
+  mergeGeometries(geometries, useGroups = false) {
+    const mixed = new Set(geometries.map((g) => !!g.index)).size > 1;
+    const list = mixed ? geometries.map((g) => (g.index ? g.toNonIndexed() : g)) : geometries;
+    const common = Object.keys(list[0].attributes).filter((k) => list.every((g) => g.attributes[k]));
+    for (const g of list) for (const k of Object.keys(g.attributes)) if (!common.includes(k)) g.deleteAttribute(k);
+    return BufferGeometryUtils.mergeGeometries(list, useGroups);
+  },
+};
+
+function setSize(s) { renderer.setSize(s, s); }
+
+function countStats(model) {
+  let tris = 0, meshes = 0; const mats = new Set();
+  model.traverse((o) => {
+    if (o.isMesh) {
+      meshes++;
+      mats.add(o.material);
+      const g = o.geometry;
+      tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+    }
+  });
+  return { triangles: Math.round(tris), meshes, materials: mats.size };
+}
+
+function disposeTree(root) {
+  root.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    const list = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of list) {
+      for (const v of Object.values(m)) if (v && v.isTexture) v.dispose();
+      m.dispose();
+    }
+  });
+}
+
+// Renders one module. Returns { out, imgs }; on error imgs is empty and out.error is set.
+async function renderOne(name, src) {
+  const out = { name, triangles: null, meshes: null, materials: null, first_ms: null, cost_median_ms: null, cost_p95_ms: null, error: null };
+  const imgs = {};
+  let model = null, pivot = null;
+  try {
+    const tBuild = performance.now();
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    let mod;
+    try { mod = await import(url); } finally { URL.revokeObjectURL(url); }
+    if (typeof mod.build !== 'function') throw new Error('缺少 export function build(THREE, kit)');
+    model = mod.build(THREE, kit);
+    if (!model || !model.isObject3D) throw new Error('build() 必须 return 一个 THREE.Group');
+
+    // Normalise: centre on the bounding sphere and fit radius 1; the floor sits under it.
+    const sphere = new THREE.Box3().setFromObject(model).getBoundingSphere(new THREE.Sphere());
+    if (!(sphere.radius > 0)) throw new Error('模型为空：包围球半径为 0');
+    model.position.sub(sphere.center);
+    const fit = new THREE.Group(); fit.add(model); fit.scale.setScalar(1 / sphere.radius);
+    pivot = new THREE.Group(); pivot.add(fit);
+    scene.add(pivot);
+    shadow.position.y = new THREE.Box3().setFromObject(pivot).min.y - 0.01;
+
+    Object.assign(out, countStats(model));
+
+    // First build: import + build + first render including shader compile.
+    setSize(STILL_LARGE);
+    renderer.render(scene, camera);
+    renderer.getContext().finish();
+    out.first_ms = Math.round(performance.now() - tBuild);
+    imgs.large = canvas.toDataURL('image/png');
+
+    setSize(STILL_SMALL);
+    renderer.render(scene, camera);
+    imgs.small = canvas.toDataURL('image/png');
+
+    // Cost: back-to-back renders, each waited out with gl.finish(), so vsync does not hide it.
+    setSize(COST_SIZE);
+    const gl = renderer.getContext(); const cost = [];
+    for (let i = 0; i < COST_RUNS; i++) {
+      pivot.rotation.y = i * 0.05;
+      const a = performance.now(); renderer.render(scene, camera); gl.finish(); cost.push(performance.now() - a);
+    }
+    const kept = cost.slice(COST_DROP).sort((a, b) => a - b);
+    out.cost_median_ms = round3(kept[Math.floor(kept.length / 2)]);
+    out.cost_p95_ms = round3(kept[Math.floor(kept.length * 0.95)]);
+  } catch (e) {
+    console.error(name, e);
+    for (const k of ['triangles', 'meshes', 'materials', 'first_ms', 'cost_median_ms', 'cost_p95_ms']) out[k] = null;
+    out.error = (e && e.message) ? e.message : String(e);
+    for (const k of Object.keys(imgs)) delete imgs[k];
+  } finally {
+    if (pivot) scene.remove(pivot);
+    if (model) disposeTree(model);
+  }
+  return { out, imgs };
+}
+
+function el(tag, attrs = {}, text = null) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (text !== null) n.textContent = text;
+  return n;
+}
+
+function addCell(out, imgs) {
+  const grid = $('grid');
+  if (out.error) {
+    const fig = el('figure', { class: 'cell err' });
+    fig.append(el('div', { class: 'errbox' }, `${out.name}\n${out.error}`));
+    fig.append(el('figcaption', {}, `${out.name} · 构建失败`));
+    grid.append(fig);
+    return;
+  }
+  const fig = el('figure', { class: 'cell' });
+  fig.append(el('img', { src: imgs.large, alt: out.name, width: 256, height: 256 }));
+  const cap = `${out.name} · ${out.triangles} 三角面 · ${out.meshes} 网格 · ${out.materials} 材质 · 首次构建 ${out.first_ms} ms · 每帧 ${out.cost_median_ms.toFixed(2)} ms (p95 ${out.cost_p95_ms.toFixed(2)})`;
+  fig.append(el('figcaption', {}, cap));
+  grid.append(fig);
+}
+
+function addStrips(okList) {
+  for (const id of ['strip-white', 'strip-dark']) {
+    const strip = $(id); strip.innerHTML = '';
+    for (const it of okList) strip.append(el('img', { src: it.small, alt: it.name, title: it.name, width: 28, height: 28 }));
+  }
+}
+
+function renderSummary(results) {
+  const ok = results.filter((r) => !r.error);
+  const errs = results.length - ok.length;
+  const sum = ok.reduce((s, r) => s + r.triangles, 0);
+  $('total').textContent = `合计 ${sum} 三角面` + (errs ? `（出错 ${errs} 个，未计入）` : '');
+  const ul = $('warnings'); ul.innerHTML = '';
+  for (const r of ok) {
+    const w = [];
+    if (r.triangles > BUDGET.triangles) w.push(`三角面 ${r.triangles} > ${BUDGET.triangles}`);
+    if (r.materials > BUDGET.materials) w.push(`材质 ${r.materials} > ${BUDGET.materials}`);
+    if (r.meshes > BUDGET.meshes) w.push(`网格 ${r.meshes} > ${BUDGET.meshes}`);
+    if (r.cost_median_ms > BUDGET.costMedianMs) w.push(`每帧中位数 ${r.cost_median_ms.toFixed(2)} ms > ${BUDGET.costMedianMs} ms`);
+    for (const msg of w) ul.append(el('li', {}, `${r.name}：${msg}`));
+  }
+  $('budget-ok').textContent = ul.children.length || !ok.length ? '' : '预算内：无超标项';
+}
+
+let busy = false;
+async function renderAll() {
+  if (busy) return;
+  busy = true; $('run').disabled = true; window.__done = false;
+  $('grid').innerHTML = ''; $('total').textContent = ''; $('warnings').innerHTML = ''; $('budget-ok').textContent = ''; addStrips([]);
+  const jobs = NAMES.filter((n) => $('b-' + n).value.trim() !== '');
+  const results = []; const okList = [];
+  try {
+    if (!jobs.length) setStatus('没有可渲染的内容：请至少在一个框里填入模块。');
+    for (let i = 0; i < jobs.length; i++) {
+      const name = jobs[i];
+      setStatus(`渲染 ${name}（${i + 1}/${jobs.length}）…`);
+      await tick();
+      const { out, imgs } = await renderOne(name, $('b-' + name).value);
+      results.push(out);
+      addCell(out, imgs);
+      if (!out.error) okList.push({ name, small: imgs.small });
+    }
+    addStrips(okList);
+    renderSummary(results);
+    const errs = results.filter((r) => r.error).length;
+    setStatus(`完成：${results.length} 个模块，出错 ${errs} 个。`);
+  } catch (e) {
+    console.error(e);
+    setStatus('渲染流程异常：' + (e && e.message ? e.message : String(e)));
+  } finally {
+    window.__results = results;
+    busy = false; $('run').disabled = false;
+    window.__done = true;
+  }
+}
+
+$('run').addEventListener('click', renderAll);
+
+$('files').addEventListener('change', async (ev) => {
+  const input = ev.target;
+  const loaded = [], ignored = [];
+  for (const f of input.files) {
+    const key = f.name.replace(/\.js$/i, '').toLowerCase();
+    if (NAMES.includes(key)) { $('b-' + key).value = await f.text(); loaded.push(`${f.name}→${key}`); }
+    else ignored.push(f.name);
+  }
+  input.value = '';
+  setStatus(`已载入 ${loaded.length} 个` + (loaded.length ? `（${loaded.join('，')}）` : '') + (ignored.length ? `；忽略 ${ignored.join('，')}` : ''));
+});
+
+window.__results = [];
+window.__done = false;
+</script>
+</body>
+</html>
